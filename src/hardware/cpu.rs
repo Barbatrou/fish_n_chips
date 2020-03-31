@@ -25,25 +25,22 @@ impl Stack
 
     pub fn push(&mut self, address: u16)
     {
+        self.stack[self.stack_pointer] = address;
         self.stack_pointer += 1;
         if self.stack_pointer >= 16 {
             panic!("ERROR: cpu stack overflow, too many nested subroutines: {:#?}", self);
         }
-        self.stack[self.stack_pointer] = address;
     }
 
-    pub fn top(&self) -> u16
-    {
-        self.stack[self.stack_pointer]
-    }
+    pub fn top(&self) -> u16 { self.stack[self.stack_pointer] }
 
     pub fn pop(&mut self) -> u16
     {
-        let address = self.top();
         self.stack_pointer -= 1;
         if self.stack_pointer < 0 {
             panic!("ERROR: cpu stack underflow: {:#?}", self);
         }
+        let address = self.top();
         address
     }
 }
@@ -107,7 +104,28 @@ impl Cpu
 
     pub fn execute_opcode(&mut self, memory: &Memory)
     {
-        let program_counter_next_operation = ProgramCounter::NEXT; // TODO match the fetched opcode to execture the right one
+        let splitted_opcode = (
+            ((self.opcode & 0xF000) >> 12) as u8,
+            ((self.opcode & 0x0F00) >> 8) as u8,
+            ((self.opcode & 0x00F0) >> 4) as u8,
+            (self.opcode & 0x000F) as u8,
+        );
+        let nnn = (self.opcode & 0x0FFF) as u16;
+        let kk = (self.opcode & 0x00FF) as u8;
+        let x = splitted_opcode.1 as usize;
+        let y = splitted_opcode.2 as usize;
+        let n = splitted_opcode.3 as usize;
+
+        let program_counter_next_operation = match splitted_opcode {
+            (0x00, 0x00, 0x0e, 0x00) => self.op_00e0(),
+            (0x00, 0x00, 0x0e, 0x0e) => self.op_00ee(),
+            (0x01, _, _, _) => self.op_1nnn(nnn),
+            (0x02, _, _, _) => self.op_2nnn(nnn),
+            (0x03, _, _, _) => self.op_3xkk(x, kk),
+            (0x04, _, _, _) => self.op_4xkk(x, kk),
+            (0x05, _, _, 0x00) => self.op_5xy0(x, y),
+            _ => ProgramCounter::NEXT,
+        };
         match program_counter_next_operation {
             ProgramCounter::NEXT => self.pc += OPCODE_SIZE,
             ProgramCounter::SKIP => self.pc += OPCODE_SIZE * 2,
@@ -171,7 +189,7 @@ impl Cpu
         ProgramCounter::skip_if(self.v_registers[x] == kk)
     }
 
-    fn op4xkk(&mut self, x: usize, kk: u8) -> ProgramCounter // SNE Vx, byte - Skip next instruction if Vx != kk
+    fn op_4xkk(&mut self, x: usize, kk: u8) -> ProgramCounter // SNE Vx, byte - Skip next instruction if Vx != kk
     {
         ProgramCounter::skip_if(self.v_registers[x] != kk)
     }
@@ -233,7 +251,7 @@ impl Cpu
         self.v_registers[x] = self.v_registers[x].wrapping_sub(self.v_registers[y]);
         ProgramCounter::NEXT
     }
-
+/*
     fn op_8xy6(&mut self) -> ProgramCounter // SHR Vx {, Vy} - Set Vx = Vx SHR 1.
     // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0. Then Vx is divided by 2.
     {
@@ -346,6 +364,154 @@ impl Cpu
     // The interpreter reads values from memory starting at location I into registers V0 through Vx.
     {
 
+    }
+*/
+
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]
+    fn cpu_initial_state()
+    {
+        let cpu = Cpu::new();
+        assert_eq!(cpu.pc, 0x200);
+        assert_eq!(cpu.stack.stack_pointer, 0);
+        assert_eq!(cpu.stack.stack, [0; 16]);
+    }
+
+    #[test]
+    fn test_op00e0()
+    {
+        let mut cpu = Cpu::new();
+        let mem = Memory::new();
+        cpu.pc = 0x200;
+        cpu.opcode = 0x00e0;
+
+        cpu.execute_opcode(&mem);
+
+        // TODO check that the display has indeed been cleaned
+
+        assert_eq!(cpu.pc, 0x200 + OPCODE_SIZE)
+    }
+
+    #[test]
+    fn test_op00ee()
+    {
+        let mut cpu = Cpu::new();
+        let mem = Memory::new();
+        cpu.opcode = 0x00ee;
+
+        cpu.stack.stack_pointer = 5;
+        cpu.stack.stack[4] = 0x4444;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.stack.stack_pointer, 4);
+        assert_eq!(cpu.pc, 0x4444);
+    }
+
+    #[test]
+    fn test_op1nnn()
+    {
+        let mut cpu = Cpu::new();
+        let mem = Memory::new();
+        cpu.opcode = 0x1300;
+
+        cpu.pc = 0x200;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.pc, 0x300);
+    }
+
+    #[test]
+    fn test_op2nnn()
+    {
+        let mut cpu = Cpu::new();
+        let mem = Memory::new();
+        cpu.opcode = 0x2300;
+
+        cpu.pc = 0x200;
+        cpu.stack.stack_pointer = 2;
+        cpu.stack.stack[2] = 0x4444;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.stack.stack_pointer, 3);
+        assert_eq!(cpu.stack.stack[2], 0x200 + OPCODE_SIZE as u16);
+        assert_eq!(cpu.pc, 0x300);
+    }
+
+    #[test]
+    fn test_op3xkk()
+    {
+        let mut cpu = Cpu::new();
+        let mem = Memory::new();
+        // With satisfied predicate
+        cpu.opcode = 0x3469;
+
+        cpu.pc = 0x200;
+        cpu.v_registers[0x04] = 0x69;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.pc, 0x200 + OPCODE_SIZE * 2);
+
+        // With unsatisfied predicate
+        cpu.opcode = 0x3469;
+
+        cpu.pc = 0x200;
+        cpu.v_registers[0x04] = 0x49;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.pc, 0x200 + OPCODE_SIZE);
+    }
+
+    #[test]
+    fn test_op4xkk()
+    {
+        let mut cpu = Cpu::new();
+        let mem = Memory::new();
+        // With satisfied predicate
+        cpu.opcode = 0x4469;
+
+        cpu.pc = 0x200;
+        cpu.v_registers[0x04] = 0x49;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.pc, 0x200 + OPCODE_SIZE * 2);
+
+        // With unsatisfied predicate
+        cpu.opcode = 0x4469;
+
+        cpu.pc = 0x200;
+        cpu.v_registers[0x04] = 0x69;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.pc, 0x200 + OPCODE_SIZE);
+    }
+
+    #[test]
+    fn test_op5xy0()
+    {
+        let mut cpu = Cpu::new();
+        let mem = Memory::new();
+        // With satisfied predicate
+        cpu.opcode = 0x5440;
+
+        cpu.pc = 0x200;
+        cpu.v_registers[0x04] = 0x04;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.pc, 0x200 + OPCODE_SIZE * 2);
+
+        // With unsatisfied predicate
+        cpu.opcode = 0x5460;
+
+        cpu.pc = 0x200;
+        cpu.v_registers[0x04] = 0x04;
+        cpu.v_registers[0x06] = 0x06;
+        cpu.execute_opcode(&mem);
+
+        assert_eq!(cpu.pc, 0x200 + OPCODE_SIZE);
     }
 
 }
