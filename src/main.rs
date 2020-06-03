@@ -1,4 +1,4 @@
-const VERSION: &str = "0.0.1";
+const VERSION: &str = "0.1.0";
 
 const WINDOW_TITLE: &str = "fish n chips";
 
